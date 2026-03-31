@@ -55,17 +55,22 @@ def _coord(cell: int, grid: float) -> float:
 # All pad positions (never block pad cells)
 # ---------------------------------------------------------------------------
 
+def _is_routable_net(net_name: str) -> bool:
+    """Return True if the net is an actual electrical connection (not empty or unconnected)."""
+    return bool(net_name) and not net_name.startswith("unconnected")
+
+
 def _all_pad_cells(board: Board) -> set[tuple[int, int]]:
     """Return set of (row, col) for every electrically-connected pad.
 
-    Only pads with a net are included — unconnected pads (e.g., mounting
-    holes) are treated as obstacles, not routing targets.
+    Only pads with a routable net are included — unconnected pads (e.g.,
+    mounting holes, unused IC pins) are treated as obstacles.
     """
     grid = board.grid_step
     cells: set[tuple[int, int]] = set()
     for comp in board.components.values():
         for pad in comp.pads:
-            if not pad.net:
+            if not _is_routable_net(pad.net):
                 continue
             px, py = comp.pad_abs_position(pad)
             cells.add((_cell(py, grid), _cell(px, grid)))
@@ -81,8 +86,8 @@ def _obstacle_exempt_cells(board: Board) -> set[tuple[int, int]]:
     connectors.  Unlike ``_all_pad_cells``, these corridor cells CAN be
     blocked later by ``_mark_path`` after a route passes through them.
 
-    Only pads with a net get corridors — unconnected pads (mounting holes)
-    remain fully blocked.
+    Only pads with a routable net get corridors — unconnected pads (mounting
+    holes, unused IC pins) remain fully blocked.
     """
     grid = board.grid_step
     cells: set[tuple[int, int]] = set()
@@ -91,7 +96,7 @@ def _obstacle_exempt_cells(board: Board) -> set[tuple[int, int]]:
         bc0, br0 = _cell(ax0, grid), _cell(ay0, grid)
         bc1, br1 = _cell(ax1, grid), _cell(ay1, grid)
         for pad in comp.pads:
-            if not pad.net:
+            if not _is_routable_net(pad.net):
                 continue
             px, py = comp.pad_abs_position(pad)
             r, c = _cell(py, grid), _cell(px, grid)
@@ -104,6 +109,22 @@ def _obstacle_exempt_cells(board: Board) -> set[tuple[int, int]]:
                 cells.add((r, ec))
             for ec in range(c + 1, bc1 + 2):
                 cells.add((r, ec))
+
+    # Remove cells at unconnected/no-net pad positions — corridors from
+    # neighboring connected pads must not pass through them.
+    # Block the full pad area (not just center cell) plus 1-cell clearance.
+    for comp in board.components.values():
+        for pad in comp.pads:
+            if _is_routable_net(pad.net):
+                continue
+            px, py = comp.pad_abs_position(pad)
+            cr, cc = _cell(py, grid), _cell(px, grid)
+            # Pad half-extents in grid cells (+ 1 cell clearance)
+            hr = max(1, _cell(max(pad.size) / 2, grid) + 1)
+            hc = max(1, _cell(max(pad.size) / 2, grid) + 1)
+            for dr in range(-hr, hr + 1):
+                for dc in range(-hc, hc + 1):
+                    cells.discard((cr + dr, cc + dc))
     return cells
 
 
@@ -607,6 +628,19 @@ def route_board(
                     net=net.name,
                     drill_mm=via_drill,
                 ))
+
+    # Mark GND via positions as obstacles so routing avoids them.
+    # Each GND via blocks a 3×3 area (via drill + clearance) on both layers.
+    rows, cols = occupied.shape[1], occupied.shape[2]
+    grid = board.grid_step
+    for gv in gnd_vias:
+        vr, vc = _cell(gv.position[1], grid), _cell(gv.position[0], grid)
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = vr + dr, vc + dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    occupied[0, nr, nc] = True
+                    occupied[1, nr, nc] = True
 
     # Carry over existing routes; add GND vias only if not already present
     all_routes = list(board.routes)
