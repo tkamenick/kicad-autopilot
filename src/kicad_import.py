@@ -184,7 +184,7 @@ def _build_pad_position_map(
     result: dict[str, list[tuple[float, float]]] = {}
     for fp in find_all(tree, "footprint"):
         fx, fy, frot = get_at(fp)
-        rad = math.radians(frot)
+        rad = math.radians(-frot)  # KiCad uses clockwise-positive rotation
         cos_r, sin_r = math.cos(rad), math.sin(rad)
         for pad in find_all(fp, "pad"):
             net_node = find_one(pad, "net")

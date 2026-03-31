@@ -80,12 +80,12 @@ class TestRotatedBoard:
         assert p2 == pytest.approx((10.5, 9.0))
 
     def test_r2_pads_rotated_90(self):
-        # R2 at 90°: local (−1.5, 0) → (0, −1.5), local (1.5, 0) → (0, 1.5)
-        # Abs: R2 at (18, 9) → pad1 (18, 7.5), pad2 (18, 10.5)
+        # R2 at 90° CW: local (−1.5, 0) → (0, 1.5), local (1.5, 0) → (0, −1.5)
+        # Abs: R2 at (18, 9) → pad1 (18, 10.5), pad2 (18, 7.5)
         p1 = _abs_pos(self._board, "R2", "1")
         p2 = _abs_pos(self._board, "R2", "2")
-        assert p1 == pytest.approx((18.0, 7.5))
-        assert p2 == pytest.approx((18.0, 10.5))
+        assert p1 == pytest.approx((18.0, 10.5))
+        assert p2 == pytest.approx((18.0, 7.5))
 
     def test_r3_pads_rotated_180(self):
         # R3 at 180°: local (−1.5, 0) → (1.5, 0), local (1.5, 0) → (−1.5, 0)
@@ -96,12 +96,12 @@ class TestRotatedBoard:
         assert p2 == pytest.approx((25.5, 9.0))
 
     def test_r4_pads_rotated_270(self):
-        # R4 at 270°: local (−1.5, 0) → (0, 1.5), local (1.5, 0) → (0, −1.5)
-        # Abs: R4 at (9, 18) → pad1 (9, 19.5), pad2 (9, 16.5)
+        # R4 at 270° CW: local (−1.5, 0) → (0, −1.5), local (1.5, 0) → (0, 1.5)
+        # Abs: R4 at (9, 18) → pad1 (9, 16.5), pad2 (9, 19.5)
         p1 = _abs_pos(self._board, "R4", "1")
         p2 = _abs_pos(self._board, "R4", "2")
-        assert p1 == pytest.approx((9.0, 19.5))
-        assert p2 == pytest.approx((9.0, 16.5))
+        assert p1 == pytest.approx((9.0, 16.5))
+        assert p2 == pytest.approx((9.0, 19.5))
 
     def test_all_pads_have_correct_net(self):
         for ref in ("R1", "R2", "R3", "R4"):

@@ -73,8 +73,12 @@ class Component:
     placement: Placement = field(default_factory=Placement)
 
     def pad_abs_position(self, pad: Pad) -> tuple[float, float]:
-        """Return absolute board position of a pad (applies component rotation)."""
-        rad = math.radians(self.rotation)
+        """Return absolute board position of a pad (applies component rotation).
+
+        KiCad uses clockwise-positive rotation in a Y-down coordinate system,
+        so we negate the angle for the standard rotation matrix.
+        """
+        rad = math.radians(-self.rotation)
         ox, oy = pad.offset
         rx = ox * math.cos(rad) - oy * math.sin(rad)
         ry = ox * math.sin(rad) + oy * math.cos(rad)

@@ -70,22 +70,23 @@ class TestPadAbsPosition:
     def test_90_rotation(self):
         comp = self._make_component((10.0, 20.0), 90.0, (3.0, 0.0))
         x, y = comp.pad_abs_position(comp.pads[0])
-        # 90° CCW: (3, 0) → (0, 3)
+        # KiCad 90° CW: (3, 0) → (0, -3)
         assert abs(x - 10.0) < 1e-9
-        assert abs(y - 23.0) < 1e-9
+        assert abs(y - 17.0) < 1e-9
 
     def test_180_rotation(self):
         comp = self._make_component((10.0, 20.0), 180.0, (3.0, 4.0))
         x, y = comp.pad_abs_position(comp.pads[0])
+        # 180° is the same CW or CCW
         assert abs(x - 7.0) < 1e-9
         assert abs(y - 16.0) < 1e-9
 
     def test_270_rotation(self):
         comp = self._make_component((10.0, 20.0), 270.0, (3.0, 0.0))
         x, y = comp.pad_abs_position(comp.pads[0])
-        # 270° CCW = 90° CW: (3, 0) → (0, -3)
+        # KiCad 270° CW = 90° CCW: (3, 0) → (0, 3)
         assert abs(x - 10.0) < 1e-9
-        assert abs(y - 17.0) < 1e-9
+        assert abs(y - 23.0) < 1e-9
 
     def test_at_origin(self):
         comp = self._make_component((0.0, 0.0), 0.0, (1.0, 2.0))

@@ -250,7 +250,7 @@ def render_svg(board: Board, options: Optional[RenderOptions] = None) -> str:
             corners = [
                 (x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)
             ]
-            rad = math.radians(comp.rotation)
+            rad = math.radians(-comp.rotation)  # KiCad uses clockwise-positive
             cos_r, sin_r = math.cos(rad), math.sin(rad)
             rotated = [
                 (cx + dx * cos_r - dy * sin_r, cy + dx * sin_r + dy * cos_r)
