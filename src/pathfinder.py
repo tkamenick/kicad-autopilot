@@ -788,14 +788,10 @@ def route_board(
     failed: list[str] = []
 
     for net in nets_to_route:
-        # Scale via cost by net class to preserve B.Cu ground pour:
-        # power nets get normal cost, signals strongly prefer F.Cu
-        if net.class_ == "power":
-            effective_via_cost = via_cost
-        elif net.class_ == "constrained_signal":
-            effective_via_cost = via_cost * 2
-        else:
-            effective_via_cost = via_cost * 2
+        # All nets prefer F.Cu (where SMD pads live) to preserve B.Cu
+        # ground pour. Use 2x via cost uniformly — B.Cu is only for
+        # unavoidable crossings.
+        effective_via_cost = via_cost * 2
 
         segs, vialist, n_failed_edges = route_net(board, net.name, occupied, pad_cells, pad_exempt, effective_via_cost)
 
