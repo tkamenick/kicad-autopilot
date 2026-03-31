@@ -58,7 +58,7 @@ def _cell(coord: float, grid: float) -> int:
 
 
 def _cells_on_segment(seg: Segment, grid: float) -> list[tuple[int, int]]:
-    """All grid cells covered by a segment (Manhattan only)."""
+    """All grid cells covered by a segment (cardinal + diagonal)."""
     sc = _cell(seg.start[0], grid)
     sr = _cell(seg.start[1], grid)
     ec = _cell(seg.end[0], grid)
@@ -71,9 +71,11 @@ def _cells_on_segment(seg: Segment, grid: float) -> list[tuple[int, int]]:
         for c in range(min(sc, ec), max(sc, ec) + 1):
             cells.append((sr, c))
     else:
-        # Diagonal segment (shouldn't occur in 90°-only routing)
-        cells.append((sr, sc))
-        cells.append((er, ec))
+        # Bresenham-style line for diagonal/arbitrary segments
+        steps = max(abs(ec - sc), abs(er - sr))
+        for i in range(steps + 1):
+            t = i / steps if steps > 0 else 0
+            cells.append((round(sr + t * (er - sr)), round(sc + t * (ec - sc))))
     return cells
 
 

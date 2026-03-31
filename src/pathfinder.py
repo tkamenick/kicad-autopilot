@@ -33,8 +33,15 @@ from src.placement_scorer import _build_mst_edges, _comp_abs_bbox
 # ---------------------------------------------------------------------------
 
 LAYERS = ["F.Cu", "B.Cu"]   # index 0 = F.Cu, index 1 = B.Cu
-VIA_COST = 5                 # grid-cell cost for a layer change
+VIA_COST = 5                 # grid-cell cost for a layer change (unscaled)
 EDGE_CLEARANCE_CELLS = 2     # cells to keep clear from board boundary
+
+# 8-direction movement: cardinal (H/V) + diagonal (45°)
+# Costs scaled ×10 to use integer arithmetic in the priority queue.
+CARDINAL_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+DIAGONAL_DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+CARDINAL_COST = 10           # 1.0 × 10
+DIAGONAL_COST = 14           # √2 × 10 ≈ 14.14 → 14
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +261,15 @@ def _build_occupied(board: Board) -> np.ndarray:
                 for c in range(min(sc, ec), max(sc, ec) + 1):
                     if 0 <= sr < rows and 0 <= c < cols and (sr, c) not in actual_pads:
                         occupied[layer_idx, sr, c] = True
+            else:
+                # Diagonal segment — Bresenham-style enumeration
+                steps = max(abs(ec - sc), abs(er - sr))
+                for i in range(steps + 1):
+                    t = i / steps if steps > 0 else 0
+                    r = round(sr + t * (er - sr))
+                    c = round(sc + t * (ec - sc))
+                    if 0 <= r < rows and 0 <= c < cols and (r, c) not in actual_pads:
+                        occupied[layer_idx, r, c] = True
 
     return occupied
 
@@ -367,8 +383,17 @@ def _astar(
         no_via_cells = set()
     dst_rc = [(r, c) for r, c, _ in dst_cells]
 
+    # Octile heuristic: admissible for 8-direction movement with
+    # cardinal cost 10 and diagonal cost 14.
     def heuristic(r: int, c: int) -> int:
-        return min(abs(r - dr) + abs(c - dc) for dr, dc in dst_rc)
+        return min(
+            (lambda dx, dy: CARDINAL_COST * max(dx, dy) + (DIAGONAL_COST - CARDINAL_COST) * min(dx, dy))
+            (abs(r - dr), abs(c - dc))
+            for dr, dc in dst_rc
+        )
+
+    # Scaled via cost to match the ×10 movement costs
+    via_cost_scaled = via_cost * CARDINAL_COST
 
     # heap entries: (f_score, g_score, row, col, layer)
     open_set: list[tuple[int, int, int, int, int]] = []
@@ -398,15 +423,33 @@ def _astar(
             path.reverse()
             return path
 
-        # 4 cardinal moves on same layer
-        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        # Cardinal moves (cost 10)
+        for dr, dc in CARDINAL_DIRS:
             nr, nc = r + dr, c + dc
             if not (0 <= nr < rows and 0 <= nc < cols):
                 continue
             if occupied[l, nr, nc]:
                 continue
             ns = (nr, nc, l)
-            ng = g + 1
+            ng = g + CARDINAL_COST
+            if ng < g_score.get(ns, 999_999_999):
+                g_score[ns] = ng
+                came_from[ns] = state
+                heapq.heappush(open_set, (ng + heuristic(nr, nc), ng, nr, nc, l))
+
+        # Diagonal moves (cost 14) — only if both adjacent cardinal cells
+        # are free (prevents cutting corners around obstacles)
+        for dr, dc in DIAGONAL_DIRS:
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < rows and 0 <= nc < cols):
+                continue
+            if occupied[l, nr, nc]:
+                continue
+            # Corner-cutting check: both cardinal neighbors must be free
+            if occupied[l, r + dr, c] or occupied[l, r, c + dc]:
+                continue
+            ns = (nr, nc, l)
+            ng = g + DIAGONAL_COST
             if ng < g_score.get(ns, 999_999_999):
                 g_score[ns] = ng
                 came_from[ns] = state
@@ -416,7 +459,7 @@ def _astar(
         nl = 1 - l
         if not occupied[nl, r, c] and (r, c) not in no_via_cells:
             ns = (r, c, nl)
-            ng = g + via_cost
+            ng = g + via_cost_scaled
             if ng < g_score.get(ns, 999_999_999):
                 g_score[ns] = ng
                 came_from[ns] = state
