@@ -56,15 +56,17 @@ def _coord(cell: int, grid: float) -> float:
 # ---------------------------------------------------------------------------
 
 def _all_pad_cells(board: Board) -> set[tuple[int, int]]:
-    """Return set of (row, col) for every actual pad on the board.
+    """Return set of (row, col) for every electrically-connected pad.
 
-    These are the true pad locations that should never be blocked by
-    ``_mark_path`` (routes must be able to terminate at pads).
+    Only pads with a net are included — unconnected pads (e.g., mounting
+    holes) are treated as obstacles, not routing targets.
     """
     grid = board.grid_step
     cells: set[tuple[int, int]] = set()
     for comp in board.components.values():
         for pad in comp.pads:
+            if not pad.net:
+                continue
             px, py = comp.pad_abs_position(pad)
             cells.add((_cell(py, grid), _cell(px, grid)))
     return cells
@@ -78,6 +80,9 @@ def _obstacle_exempt_cells(board: Board) -> set[tuple[int, int]]:
     ``_build_occupied`` so traces can physically reach pads inside large
     connectors.  Unlike ``_all_pad_cells``, these corridor cells CAN be
     blocked later by ``_mark_path`` after a route passes through them.
+
+    Only pads with a net get corridors — unconnected pads (mounting holes)
+    remain fully blocked.
     """
     grid = board.grid_step
     cells: set[tuple[int, int]] = set()
@@ -86,6 +91,8 @@ def _obstacle_exempt_cells(board: Board) -> set[tuple[int, int]]:
         bc0, br0 = _cell(ax0, grid), _cell(ay0, grid)
         bc1, br1 = _cell(ax1, grid), _cell(ay1, grid)
         for pad in comp.pads:
+            if not pad.net:
+                continue
             px, py = comp.pad_abs_position(pad)
             r, c = _cell(py, grid), _cell(px, grid)
             cells.add((r, c))
