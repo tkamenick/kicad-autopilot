@@ -269,6 +269,128 @@ def _check_trace_width(board: Board) -> list[DRCViolation]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _check_pour_connectivity(board: Board) -> list[DRCViolation]:
+    """Check that all GND vias/pads can reach each other through the B.Cu pour.
+
+    Builds a B.Cu occupancy grid, marks non-GND copper as blocked, then
+    flood-fills from the first GND position. Any GND via/pad not reached
+    is on an isolated copper island.
+    """
+    from collections import deque
+
+    violations: list[DRCViolation] = []
+    grid = board.grid_step
+    outline_xs = [pt[0] for pt in board.board_outline]
+    outline_ys = [pt[1] for pt in board.board_outline]
+    if not outline_xs:
+        return violations
+
+    max_x, max_y = max(outline_xs), max(outline_ys)
+    cols = int(round(max_x / grid)) + 4
+    rows = int(round(max_y / grid)) + 4
+
+    # B.Cu grid: True = blocked (non-GND copper or outside board)
+    blocked = [[True] * cols for _ in range(rows)]
+
+    # Open all cells inside the board
+    min_c = int(round(min(outline_xs) / grid))
+    max_c = int(round(max_x / grid))
+    min_r = int(round(min(outline_ys) / grid))
+    max_r = int(round(max_y / grid))
+    for r in range(min_r, min(max_r + 1, rows)):
+        for c in range(min_c, min(max_c + 1, cols)):
+            blocked[r][c] = False
+
+    # Block non-GND B.Cu traces (with 2-cell clearance to model pour gap)
+    for route in board.routes:
+        if route.net in ("GND", "AGND", "DGND", "PGND"):
+            continue
+        for seg in route.segments:
+            if seg.layer != "B.Cu":
+                continue
+            sc = int(round(seg.start[0] / grid))
+            sr = int(round(seg.start[1] / grid))
+            ec = int(round(seg.end[0] / grid))
+            er = int(round(seg.end[1] / grid))
+            if sc == ec:
+                for r in range(min(sr, er), max(sr, er) + 1):
+                    for dr in range(-2, 3):
+                        for dc in range(-2, 3):
+                            nr, nc = r + dr, sc + dc
+                            if 0 <= nr < rows and 0 <= nc < cols:
+                                blocked[nr][nc] = True
+            elif sr == er:
+                for c in range(min(sc, ec), max(sc, ec) + 1):
+                    for dr in range(-2, 3):
+                        for dc in range(-2, 3):
+                            nr, nc = sr + dr, c + dc
+                            if 0 <= nr < rows and 0 <= nc < cols:
+                                blocked[nr][nc] = True
+
+    # Block non-GND vias (with clearance)
+    for via in board.vias:
+        if via.net in ("GND", "AGND", "DGND", "PGND"):
+            continue
+        vc = int(round(via.position[0] / grid))
+        vr = int(round(via.position[1] / grid))
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = vr + dr, vc + dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    blocked[nr][nc] = True
+
+    # Collect all GND positions (vias + through-hole pads)
+    gnd_positions: list[tuple[int, int, str]] = []  # (row, col, description)
+    for via in board.vias:
+        if via.net in ("GND", "AGND", "DGND", "PGND"):
+            r = int(round(via.position[1] / grid))
+            c = int(round(via.position[0] / grid))
+            gnd_positions.append((r, c, f"GND via at ({via.position[0]:.2f},{via.position[1]:.2f})"))
+
+    for comp in board.components.values():
+        for pad in comp.pads:
+            if pad.net not in ("GND", "AGND", "DGND", "PGND"):
+                continue
+            if pad.layer != "*.Cu":
+                continue  # only through-hole pads connect to B.Cu pour
+            px, py = comp.pad_abs_position(pad)
+            r = int(round(py / grid))
+            c = int(round(px / grid))
+            gnd_positions.append((r, c, f"GND pad {comp.reference}.{pad.number} at ({px:.2f},{py:.2f})"))
+
+    if len(gnd_positions) < 2:
+        return violations
+
+    # Flood-fill from the first GND position
+    visited = set()
+    queue = deque()
+    start_r, start_c = gnd_positions[0][0], gnd_positions[0][1]
+    if 0 <= start_r < rows and 0 <= start_c < cols:
+        queue.append((start_r, start_c))
+        visited.add((start_r, start_c))
+
+    while queue:
+        r, c = queue.popleft()
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited and not blocked[nr][nc]:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+
+    # Check if all GND positions are reachable
+    for r, c, desc in gnd_positions[1:]:
+        if (r, c) not in visited:
+            violations.append(DRCViolation(
+                type="pour_island",
+                severity="error",
+                net_a="GND",
+                location=(round(c * grid, 4), round(r * grid, 4)),
+                message=f"Isolated GND: {desc} not connected to main pour",
+            ))
+
+    return violations
+
+
 def check_drc(
     board: Board,
     edge_clearance_mm: float = 0.5,
@@ -279,6 +401,7 @@ def check_drc(
     violations.extend(_check_edge_clearance(board, edge_clearance_mm))
     violations.extend(_check_shorts(board))
     violations.extend(_check_trace_width(board))
+    violations.extend(_check_pour_connectivity(board))
     return violations
 
 
