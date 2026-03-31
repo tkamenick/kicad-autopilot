@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from src.schema import Board, Route, Via, load_board
-from src.sexpr_parser import find_all, get_str, get_xy, parse_file
+from src.sexpr_parser import find_all, find_one, get_at, get_str, get_xy, parse_file
 
 
 # ---------------------------------------------------------------------------
@@ -26,14 +26,19 @@ from src.sexpr_parser import find_all, get_str, get_xy, parse_file
 # ---------------------------------------------------------------------------
 
 def _strip_routing(text: str) -> str:
-    """Remove all (segment ...) and (via ...) top-level nodes from kicad_pcb text."""
+    """Remove all (segment ...), (via ...), and (filled_polygon ...) nodes.
+
+    Stripping filled_polygon forces KiCad to recalculate zone fills,
+    which is necessary because our new traces/vias need clearance gaps
+    in the ground pour.
+    """
     result: list[str] = []
     i = 0
     n = len(text)
 
     while i < n:
         # Scan for a top-level (segment or (via token
-        m = re.search(r'\(\s*(segment|via)\s', text[i:])
+        m = re.search(r'\(\s*(segment|via|filled_polygon)\s', text[i:])
         if m is None:
             result.append(text[i:])
             break
@@ -100,7 +105,6 @@ def _extract_origin(kicad_path: str | Path) -> tuple[float, float]:
 
     # Try gr_poly Edge.Cuts
     if not points:
-        from src.sexpr_parser import find_one
         for poly in find_all(tree, "gr_poly"):
             if get_str(poly, "layer") == "Edge.Cuts":
                 pts_node = find_one(poly, "pts")
@@ -179,7 +183,6 @@ def _build_pad_position_map(
     tree = parse_file(str(kicad_path))
     result: dict[str, list[tuple[float, float]]] = {}
     for fp in find_all(tree, "footprint"):
-        from src.sexpr_parser import get_at
         fx, fy, frot = get_at(fp)
         rad = math.radians(frot)
         cos_r, sin_r = math.cos(rad), math.sin(rad)
@@ -276,6 +279,8 @@ def import_routes(
         else:
             net_ref = via.net
         page_pos = (via.position[0] + origin_x, via.position[1] + origin_y)
+        # Snap GND vias to actual pad positions (via-in-pad)
+        page_pos = _snap_to_pad(page_pos[0], page_pos[1], via.net, pad_map)
         new_nodes.append(_format_via(page_pos, via_size, via.drill_mm, net_ref))
 
     # Inject before the final closing paren
