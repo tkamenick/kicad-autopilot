@@ -102,16 +102,40 @@ class TestBuildOccupied:
         assert r < occ.shape[1] and c < occ.shape[2]
         assert not occ[0, r, c]
 
-    def test_component_bbox_blocked(self):
+    def test_smd_pad_zone_blocked(self):
+        """SMD components block pad zones, not full bbox."""
         nets = {"A": _make_net("A"), "B": _make_net("B")}
         r1 = _resistor("R1", (10.0, 10.0), "A", "B")
         board = _simple_board(components={"R1": r1}, nets=nets)
         occ = _build_occupied(board)
-        # Cell inside R1's bbox but NOT on a pad escape corridor should be blocked.
-        # Pads at (8.5,10.0)→cell(33,28) and (11.5,10.0)→cell(33,38).
-        # Escape corridors run horizontally (row 33) and vertically (cols 28, 38).
-        # Cell at row=32, col=33 is inside bbox but off all corridors → blocked.
-        assert occ[0, 32, 33]  # F.Cu blocked inside bbox, not on corridor
+        # R1 is SMD (pad layer="F.Cu", no *.Cu pads).
+        # Pad 1 at (8.5,10) and pad 2 at (11.5,10).
+        # Cells near pad 1 should be blocked on F.Cu (pad zone)
+        pr = _cell(10.0, 0.3)
+        pc1 = _cell(8.5, 0.3)
+        assert occ[0, pr - 2, pc1]  # clearance above pad → blocked
+        # Cell midway between pads (row=33, col=33) should be FREE (inter-pad gap)
+        assert not occ[0, 32, 33]  # inter-pad space is routable
+
+    def test_thru_hole_bbox_blocked(self):
+        """Through-hole components block full bbox."""
+        pads = [
+            Pad(number="1", net="A", offset=(-1.5, 0.0), size=(1.0, 1.0),
+                shape="circle", layer="*.Cu"),
+            Pad(number="2", net="B", offset=(1.5, 0.0), size=(1.0, 1.0),
+                shape="circle", layer="*.Cu"),
+        ]
+        comp = Component(
+            reference="J1", footprint="Conn", description="",
+            position=(10.0, 10.0), rotation=0.0, layer="F.Cu",
+            bbox=(-2.0, -1.0, 2.0, 1.0), pads=pads,
+        )
+        nets = {"A": _make_net("A"), "B": _make_net("B")}
+        board = _simple_board(components={"J1": comp}, nets=nets)
+        occ = _build_occupied(board)
+        # Cell inside bbox but not on pad or corridor → blocked on both layers
+        assert occ[0, 32, 33]
+        assert occ[1, 32, 33]
 
     def test_pad_cells_not_blocked(self):
         nets = {"A": _make_net("A"), "B": _make_net("B")}

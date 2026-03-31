@@ -77,21 +77,25 @@ def _all_pad_cells(board: Board) -> set[tuple[int, int]]:
     return cells
 
 
+def _is_smd_component(comp: Component) -> bool:
+    """Return True if the component is surface-mount (no through-hole pads)."""
+    return not any(p.layer == "*.Cu" for p in comp.pads)
+
+
 def _obstacle_exempt_cells(board: Board) -> set[tuple[int, int]]:
     """Return cells exempt from component-bbox obstacle marking.
 
-    Includes actual pad cells PLUS escape corridors (cardinal lines from
-    each pad to the edge of its component bbox).  Used only during initial
-    ``_build_occupied`` so traces can physically reach pads inside large
-    connectors.  Unlike ``_all_pad_cells``, these corridor cells CAN be
-    blocked later by ``_mark_path`` after a route passes through them.
+    For through-hole components: escape corridors (cardinal lines from each
+    pad to the bbox edge) so traces can reach pads inside large connectors.
 
-    Only pads with a routable net get corridors — unconnected pads (mounting
-    holes, unused IC pins) remain fully blocked.
+    For SMD components: not needed — SMD uses pad-zone blocking (see
+    ``_build_occupied``) so the inter-pad space is inherently free.
     """
     grid = board.grid_step
     cells: set[tuple[int, int]] = set()
     for comp in board.components.values():
+        if _is_smd_component(comp):
+            continue  # SMD uses pad-zone model, no bbox to exempt from
         ax0, ay0, ax1, ay1 = _comp_abs_bbox(comp)
         bc0, br0 = _cell(ax0, grid), _cell(ay0, grid)
         bc1, br1 = _cell(ax1, grid), _cell(ay1, grid)
@@ -110,16 +114,15 @@ def _obstacle_exempt_cells(board: Board) -> set[tuple[int, int]]:
             for ec in range(c + 1, bc1 + 2):
                 cells.add((r, ec))
 
-    # Remove cells at unconnected/no-net pad positions — corridors from
-    # neighboring connected pads must not pass through them.
-    # Block the full pad area (not just center cell) plus 1-cell clearance.
+    # Remove cells at unconnected through-hole pad positions
     for comp in board.components.values():
+        if _is_smd_component(comp):
+            continue
         for pad in comp.pads:
             if _is_routable_net(pad.net):
                 continue
             px, py = comp.pad_abs_position(pad)
             cr, cc = _cell(py, grid), _cell(px, grid)
-            # Pad half-extents in grid cells (+ 1 cell clearance)
             hr = max(1, _cell(max(pad.size) / 2, grid) + 1)
             hc = max(1, _cell(max(pad.size) / 2, grid) + 1)
             for dr in range(-hr, hr + 1):
@@ -167,21 +170,48 @@ def _build_occupied(board: Board) -> np.ndarray:
                 if r < safe_r0 or r > safe_r1 or c < safe_c0 or c > safe_c1:
                     occupied[layer_idx, r, c] = True
 
-    # Block component bounding boxes (but never pad cells)
+    # Block component obstacles
+    # Through-hole: full bbox on both layers (plated holes are real obstacles)
+    # SMD: per-pad zones only (inter-pad space is free for routing)
+    PAD_CLEARANCE_MM = 0.3       # clearance around pads (1 grid cell)
+    pad_cells_set = _all_pad_cells(board)
+    # Build pad + 1-cell escape halo — never block these
+    pad_and_neighbors: set[tuple[int, int]] = set()
+    for pr, pc in pad_cells_set:
+        pad_and_neighbors.add((pr, pc))
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            pad_and_neighbors.add((pr + dr, pc + dc))
+
     for comp in board.components.values():
-        ax0, ay0, ax1, ay1 = _comp_abs_bbox(comp)
-        c0 = _cell(ax0, grid)
-        r0 = _cell(ay0, grid)
-        c1 = _cell(ax1, grid)
-        r1 = _cell(ay1, grid)
-        is_thru = any(p.layer == "*.Cu" for p in comp.pads)
-        layers_to_mark = [0, 1] if is_thru else [0 if comp.layer == "F.Cu" else 1]
-        for layer_idx in layers_to_mark:
-            for r in range(r0, r1 + 1):
-                for c in range(c0, c1 + 1):
-                    if 0 <= r < rows and 0 <= c < cols:
-                        if (r, c) not in exempt_cells:
-                            occupied[layer_idx, r, c] = True
+        if _is_smd_component(comp):
+            # SMD: block only around each pad, not the full bbox
+            comp_layer = 0 if comp.layer == "F.Cu" else 1
+            for pad in comp.pads:
+                px, py = comp.pad_abs_position(pad)
+                pr, pc = _cell(py, grid), _cell(px, grid)
+                # Block pad copper area + clearance (exempt pad cells + halo)
+                hr = max(1, _cell(pad.size[1] / 2 + PAD_CLEARANCE_MM, grid))
+                hc = max(1, _cell(pad.size[0] / 2 + PAD_CLEARANCE_MM, grid))
+                for dr in range(-hr, hr + 1):
+                    for dc in range(-hc, hc + 1):
+                        nr, nc = pr + dr, pc + dc
+                        if (nr, nc) in pad_and_neighbors:
+                            continue
+                        if 0 <= nr < rows and 0 <= nc < cols:
+                            occupied[comp_layer, nr, nc] = True
+        else:
+            # Through-hole: full bbox on both layers
+            ax0, ay0, ax1, ay1 = _comp_abs_bbox(comp)
+            c0 = _cell(ax0, grid)
+            r0 = _cell(ay0, grid)
+            c1 = _cell(ax1, grid)
+            r1 = _cell(ay1, grid)
+            for layer_idx in [0, 1]:
+                for r in range(r0, r1 + 1):
+                    for c in range(c0, c1 + 1):
+                        if 0 <= r < rows and 0 <= c < cols:
+                            if (r, c) not in exempt_cells:
+                                occupied[layer_idx, r, c] = True
 
     # Block keepout zones
     for keepout in board.keepouts:
