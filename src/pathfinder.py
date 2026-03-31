@@ -232,13 +232,24 @@ def _mark_path(occupied: np.ndarray, path: list[tuple[int, int, int]],
     The clearance inflation ensures a minimum 1-grid-step (0.3 mm) gap
     between traces of different nets, satisfying typical PCB clearance rules.
     Via transition points are expanded to 3×3 on both layers.
+
+    Cells adjacent to pad_cells are exempt from clearance marking so that
+    multiple routes can converge on the same pad (e.g., multi-terminal nets
+    where several MST edges share a common pad).
     """
     rows, cols = occupied.shape[1], occupied.shape[2]
+    # Build set of cells adjacent to any pad (exempt from clearance)
+    pad_neighbors: set[tuple[int, int]] = set()
+    for pr, pc in pad_cells:
+        pad_neighbors.add((pr, pc))
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            pad_neighbors.add((pr + dr, pc + dc))
+
     for r, c, l in path:
         for dr in range(-1, 2):
             for dc in range(-1, 2):
                 nr, nc = r + dr, c + dc
-                if (nr, nc) in pad_cells:
+                if (nr, nc) in pad_neighbors:
                     continue
                 if 0 <= nr < rows and 0 <= nc < cols:
                     occupied[l, nr, nc] = True
@@ -435,10 +446,10 @@ def route_net(
     occupied: np.ndarray,
     pad_cells: set[tuple[int, int]],
     via_cost: int = VIA_COST,
-) -> tuple[list[Segment], list[Via]]:
+) -> tuple[list[Segment], list[Via], int]:
     """Route a single net using MST edge decomposition.
 
-    Updates `occupied` in-place. Returns all segments and vias for the net.
+    Updates `occupied` in-place. Returns (segments, vias, failed_edge_count).
     """
     grid = board.grid_step
     net = board.nets.get(net_name)
@@ -447,7 +458,7 @@ def route_net(
     mst_by_net = _build_mst_edges(board)
     edges = mst_by_net.get(net_name, [])
     if not edges:
-        return [], []
+        return [], [], 0
 
     # Sort edges by Manhattan distance (shortest first)
     def manhattan(p1: tuple[float, float], p2: tuple[float, float]) -> float:
@@ -457,6 +468,8 @@ def route_net(
 
     all_segments: list[Segment] = []
     all_vias: list[Via] = []
+    routed_edges = 0
+    failed_edges = 0
 
     # Build a lookup: (row, col) → layer_indices for this net's pads
     # Build lookup: this net's pad cells and their layer indices
@@ -513,14 +526,16 @@ def route_net(
             all_segments.extend(segs)
             all_vias.extend(vialist)
             _mark_path(occupied, path, pad_cells)
-        # else: edge is unroutable; continue with remaining edges
+            routed_edges += 1
+        else:
+            failed_edges += 1
 
     # Restore other nets' pad cells (so future nets can still reach them)
     for r, c in other_pads:
         occupied[0, r, c] = False
         occupied[1, r, c] = False
 
-    return all_segments, all_vias
+    return all_segments, all_vias, failed_edges
 
 
 # ---------------------------------------------------------------------------
@@ -604,13 +619,15 @@ def route_board(
     failed: list[str] = []
 
     for net in nets_to_route:
-        segs, vialist = route_net(board, net.name, occupied, pad_cells, via_cost)
+        segs, vialist, n_failed_edges = route_net(board, net.name, occupied, pad_cells, via_cost)
 
         if not segs and not vialist:
-            # Check if there are pads to route (single-pad nets don't need routing)
             if pad_counts.get(net.name, 0) >= 2:
                 failed.append(net.name)
             continue
+
+        if n_failed_edges > 0:
+            failed.append(net.name)
 
         width = net.width_mm or board.rules.default_trace_width_mm
         if segs:

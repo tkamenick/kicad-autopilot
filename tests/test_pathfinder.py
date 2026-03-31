@@ -260,11 +260,12 @@ class TestMarkPath:
 
     def test_pad_cells_not_marked(self):
         occ = np.zeros((2, 20, 20), dtype=bool)
-        path = [(5, 5, 0), (5, 6, 0)]
+        path = [(5, 5, 0), (5, 6, 0), (5, 7, 0), (5, 8, 0)]
         pad_cells = {(5, 5)}
         _mark_path(occ, path, pad_cells)
         assert not occ[0, 5, 5]  # pad cell protected
-        assert occ[0, 5, 6]
+        assert not occ[0, 5, 6]  # adjacent to pad — kept open for convergence
+        assert occ[0, 5, 8]  # far from pad — clearance marked
 
     def test_via_expands_3x3(self):
         occ = np.zeros((2, 20, 20), dtype=bool)
@@ -295,7 +296,7 @@ class TestRouteNet:
                               components={"R1": r1, "R2": r2}, nets=nets)
         occ = _build_occupied(board)
         pad_cells = _all_pad_cells(board)
-        segs, vias = route_net(board, "A", occ, pad_cells)
+        segs, vias, _ = route_net(board, "A", occ, pad_cells)
         # Should produce at least one segment
         assert len(segs) > 0
         # All segments should be on A net (verified via route_board)
@@ -328,7 +329,7 @@ class TestRouteNet:
         # Block all cells in column range 4–16, rows 3–7 (everything between them)
         occ[:, 3:8, 4:17] = True
         pad_cells = _all_pad_cells(board)
-        segs, vias = route_net(board, "A", occ, pad_cells)
+        segs, vias, _ = route_net(board, "A", occ, pad_cells)
         # With the middle blocked, there should be no route on A
         # (note: not testing for None return — route_net returns empty lists on failure)
         # The important check: route_board marks it as failed
