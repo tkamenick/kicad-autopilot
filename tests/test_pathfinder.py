@@ -263,9 +263,21 @@ class TestMarkPath:
         path = [(5, 5, 0), (5, 6, 0), (5, 7, 0), (5, 8, 0)]
         pad_cells = {(5, 5)}
         _mark_path(occ, path, pad_cells)
-        assert not occ[0, 5, 5]  # pad cell protected
-        assert not occ[0, 5, 6]  # adjacent to pad — kept open for convergence
-        assert occ[0, 5, 8]  # far from pad — clearance marked
+        assert not occ[0, 5, 5]  # pad cell itself always protected
+        assert occ[0, 5, 8]  # non-pad cell gets clearance marked
+
+    def test_pad_exempt_layer_aware(self):
+        occ = np.zeros((2, 20, 20), dtype=bool)
+        path = [(5, 6, 0), (5, 7, 0)]
+        pad_cells = {(5, 5)}
+        # Exempt pad neighbors only on F.Cu (layer 0)
+        pad_exempt = {(5, 5, 0), (5, 5, 1), (5, 6, 0)}
+        _mark_path(occ, path, pad_cells, pad_exempt=pad_exempt)
+        assert not occ[0, 5, 6]  # exempt on F.Cu
+        # B.Cu clearance: path is on layer 0, so layer 1 not marked by trace
+        # clearance (only the trace's own layer gets clearance)
+        # Test that non-exempt cells DO get marked
+        assert occ[0, 5, 9]  # non-exempt cell on same layer gets clearance
 
     def test_via_expands_3x3(self):
         occ = np.zeros((2, 20, 20), dtype=bool)

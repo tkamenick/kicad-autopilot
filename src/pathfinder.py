@@ -246,8 +246,40 @@ def _mark_via_area(occupied: np.ndarray, row: int, col: int,
                 occupied[1, r, c] = True
 
 
+def _build_pad_exempt(board: Board) -> set[tuple[int, int, int]]:
+    """Build layer-aware set of (row, col, layer) cells near pads.
+
+    Pad cells are exempt on all layers.  Cardinal neighbors are exempt
+    only on the pad's own layer(s), so B.Cu traces near F.Cu-only pads
+    still get clearance marking.
+    """
+    grid = board.grid_step
+    exempt: set[tuple[int, int, int]] = set()
+    for comp in board.components.values():
+        for pad in comp.pads:
+            if not _is_routable_net(pad.net):
+                continue
+            px, py = comp.pad_abs_position(pad)
+            r, c = _cell(py, grid), _cell(px, grid)
+            # Pad cell itself: exempt on both layers
+            exempt.add((r, c, 0))
+            exempt.add((r, c, 1))
+            # Neighbors: exempt only on pad's layer(s)
+            if pad.layer == "*.Cu":
+                pad_layers = [0, 1]
+            elif pad.layer in LAYERS:
+                pad_layers = [LAYERS.index(pad.layer)]
+            else:
+                pad_layers = [0, 1]
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                for li in pad_layers:
+                    exempt.add((r + dr, c + dc, li))
+    return exempt
+
+
 def _mark_path(occupied: np.ndarray, path: list[tuple[int, int, int]],
-               pad_cells: set[tuple[int, int]]) -> None:
+               pad_cells: set[tuple[int, int]],
+               pad_exempt: Optional[set[tuple[int, int, int]]] = None) -> None:
     """Mark path cells and 1-cell clearance zone occupied on the trace layer.
 
     The clearance inflation ensures a minimum 1-grid-step (0.3 mm) gap
@@ -259,18 +291,21 @@ def _mark_path(occupied: np.ndarray, path: list[tuple[int, int, int]],
     where several MST edges share a common pad).
     """
     rows, cols = occupied.shape[1], occupied.shape[2]
-    # Build set of cells adjacent to any pad (exempt from clearance)
-    pad_neighbors: set[tuple[int, int]] = set()
-    for pr, pc in pad_cells:
-        pad_neighbors.add((pr, pc))
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            pad_neighbors.add((pr + dr, pc + dc))
+    # Build exemption set: pad cells + layer-aware neighbors
+    if pad_exempt is None:
+        # Fallback: exempt pad cells on both layers (no neighbor exemption)
+        pad_exempt_set: set[tuple[int, int, int]] = set()
+        for pr, pc in pad_cells:
+            pad_exempt_set.add((pr, pc, 0))
+            pad_exempt_set.add((pr, pc, 1))
+    else:
+        pad_exempt_set = pad_exempt
 
     for r, c, l in path:
-        for dr in range(-1, 2):
-            for dc in range(-1, 2):
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
                 nr, nc = r + dr, c + dc
-                if (nr, nc) in pad_neighbors:
+                if (nr, nc, l) in pad_exempt_set:
                     continue
                 if 0 <= nr < rows and 0 <= nc < cols:
                     occupied[l, nr, nc] = True
@@ -466,6 +501,7 @@ def route_net(
     net_name: str,
     occupied: np.ndarray,
     pad_cells: set[tuple[int, int]],
+    pad_exempt: Optional[set[tuple[int, int, int]]] = None,
     via_cost: int = VIA_COST,
 ) -> tuple[list[Segment], list[Via], int]:
     """Route a single net using MST edge decomposition.
@@ -546,7 +582,7 @@ def route_net(
             segs, vialist = _path_to_segments_vias(path, net_name, grid, via_drill)
             all_segments.extend(segs)
             all_vias.extend(vialist)
-            _mark_path(occupied, path, pad_cells)
+            _mark_path(occupied, path, pad_cells, pad_exempt=pad_exempt)
             routed_edges += 1
         else:
             failed_edges += 1
@@ -577,6 +613,7 @@ def route_board(
     """
     occupied = _build_occupied(board)
     pad_cells = _all_pad_cells(board)
+    pad_exempt = _build_pad_exempt(board)
 
     # Compute max Manhattan distance per net (short nets route first)
     net_max_dist: dict[str, float] = {}
@@ -629,18 +666,42 @@ def route_board(
                     drill_mm=via_drill,
                 ))
 
-    # Mark GND via positions as obstacles so routing avoids them.
-    # Each GND via blocks a 3×3 area (via drill + clearance) on both layers.
+    # Mark GND via positions and GND pad clearance zones as obstacles.
+    # KiCad requires 0.2mm copper clearance + 0.25mm hole clearance.
+    # With 0.3mm via copper radius and ~0.6mm pad half-extent, we need
+    # ±4 cells (1.2mm) center-to-center to meet clearance rules.
     rows, cols = occupied.shape[1], occupied.shape[2]
     grid = board.grid_step
+    clearance_cells = 3  # cells of clearance around GND features
+
     for gv in gnd_vias:
         vr, vc = _cell(gv.position[1], grid), _cell(gv.position[0], grid)
-        for dr in range(-2, 3):
-            for dc in range(-2, 3):
+        for dr in range(-clearance_cells, clearance_cells + 1):
+            for dc in range(-clearance_cells, clearance_cells + 1):
                 nr, nc = vr + dr, vc + dc
                 if 0 <= nr < rows and 0 <= nc < cols:
                     occupied[0, nr, nc] = True
                     occupied[1, nr, nc] = True
+
+    # Also mark clearance around GND through-hole pads (already connected
+    # to pour, routing must stay clear of them)
+    for comp in board.components.values():
+        for pad in comp.pads:
+            if pad.net not in ("GND", "AGND", "DGND", "PGND"):
+                continue
+            if pad.layer not in ("*.Cu",):
+                continue  # only through-hole GND pads need extra clearance
+            px, py = comp.pad_abs_position(pad)
+            pr, pc = _cell(py, grid), _cell(px, grid)
+            # Block based on pad size + clearance
+            hr = max(clearance_cells, _cell(pad.size[1] / 2, grid) + 2)
+            hc = max(clearance_cells, _cell(pad.size[0] / 2, grid) + 2)
+            for dr in range(-hr, hr + 1):
+                for dc in range(-hc, hc + 1):
+                    nr, nc = pr + dr, pc + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        occupied[0, nr, nc] = True
+                        occupied[1, nr, nc] = True
 
     # Carry over existing routes; add GND vias only if not already present
     all_routes = list(board.routes)
@@ -653,7 +714,7 @@ def route_board(
     failed: list[str] = []
 
     for net in nets_to_route:
-        segs, vialist, n_failed_edges = route_net(board, net.name, occupied, pad_cells, via_cost)
+        segs, vialist, n_failed_edges = route_net(board, net.name, occupied, pad_cells, pad_exempt, via_cost)
 
         if not segs and not vialist:
             if pad_counts.get(net.name, 0) >= 2:
