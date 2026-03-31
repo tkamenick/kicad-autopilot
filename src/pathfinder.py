@@ -547,10 +547,11 @@ def route_net(
     if not edges:
         return [], [], 0
 
-    # Sort edges by Manhattan distance (shortest first)
     def manhattan(p1: tuple[float, float], p2: tuple[float, float]) -> float:
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 
+    # Route shortest edges first — secures easy connections and leaves
+    # maximum flexibility for harder long-distance edges.
     edges_sorted = sorted(edges, key=lambda e: manhattan(e[0], e[1]))
 
     all_segments: list[Segment] = []
@@ -744,7 +745,16 @@ def route_board(
     failed: list[str] = []
 
     for net in nets_to_route:
-        segs, vialist, n_failed_edges = route_net(board, net.name, occupied, pad_cells, pad_exempt, via_cost)
+        # Scale via cost by net class to preserve B.Cu ground pour:
+        # power nets get normal cost, signals strongly prefer F.Cu
+        if net.class_ == "power":
+            effective_via_cost = via_cost
+        elif net.class_ == "constrained_signal":
+            effective_via_cost = via_cost * 2
+        else:
+            effective_via_cost = via_cost * 2
+
+        segs, vialist, n_failed_edges = route_net(board, net.name, occupied, pad_cells, pad_exempt, effective_via_cost)
 
         if not segs and not vialist:
             if pad_counts.get(net.name, 0) >= 2:
