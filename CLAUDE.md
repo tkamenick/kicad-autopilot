@@ -39,8 +39,11 @@ python -m src.apply_constraints board.json constraints.json -o board.json
 python -m src.pathfinder board.json --net "SPI_CLK"
 python -m src.pathfinder board.json --nets "3V3,SPI_CLK,SPI_MOSI"
 
-# Check design rules
+# Check design rules (internal)
 python -m src.drc_checker board.json
+
+# Check design rules (KiCad DRC — requires KiCad installed)
+python -m src.kicad_drc routed.kicad_pcb
 
 # Analyze routing conflicts
 python -m src.conflict_analyzer board.json
