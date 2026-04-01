@@ -8,10 +8,42 @@ Where `$ARGUMENTS` is the path to a `.kicad_pcb` file.
 
 ---
 
-## PHASE 1 — ANALYZE
+## PHASE 0 — DETECT UNPLACED BOARD
 
 ```bash
 python -m src.kicad_export "$ARGUMENTS" -o /tmp/board.json
+python3 -c "
+from src.schema import load_board, is_board_unplaced
+board = load_board('/tmp/board.json')
+print('UNPLACED' if is_board_unplaced(board) else 'PLACED')
+"
+```
+
+If **UNPLACED**: Components are piled together (fresh from schematic import). Ask the user:
+> "Components appear unplaced. I'll need to do initial placement. Let me ask about your constraints first."
+
+Then run `/pcb-constrain "$ARGUMENTS"` to collect:
+- Edge connectors and their rotation
+- Alignment groups (headers at same Y, etc.)
+- Keepout zones (mating board areas, heatsinks)
+- Fixed-position components (mounting holes)
+
+After constraints are set:
+```bash
+python -m src.component_placer /tmp/board.json --constraints /tmp/constraints.json -o /tmp/board.json
+python -m src.placement_scorer /tmp/board.json
+python -m src.visualizer /tmp/board.json -o /tmp/placed.svg --show-ratsnest
+```
+
+Show the user the SVG and score. Ask: "Does this initial placement look reasonable? Any adjustments before I start optimizing?"
+
+If **PLACED**: Skip to Phase 1.
+
+---
+
+## PHASE 1 — ANALYZE
+
+```bash
 python -m src.board_analyzer /tmp/board.json --text
 python -m src.placement_scorer /tmp/board.json
 python -m src.conflict_analyzer /tmp/board.json

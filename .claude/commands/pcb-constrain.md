@@ -69,10 +69,19 @@ For each group, follow up:
 **C. Fixed-position components**
 > "Are there any components whose position is fixed by mechanical constraints — mounting holes, specific pads that must hit a connector footprint on the mating board, etc.?"
 
-**D. Free-form notes**
-> "Any other placement requirements I should know about? (e.g., 'C1 must be within 5mm of U1', 'no components in the top-left 10×10mm area')"
+**D. Component-free zones (placement keepouts)**
+> "Are there areas on the board where no components should be placed? For example, areas where a mating board sits above, connector clearance zones, or heatsink areas. Traces and vias are still OK in these zones."
 
-Note: zone-based constraints and proximity constraints are noted as `notes` on the component but not yet machine-enforced — flag this clearly.
+For each zone, ask:
+> "What are the bounds? Give me the corner coordinates in mm from the top-left of the board, like: x=0 to x=30, y=60 to y=80."
+> "What's this zone for? (helps me understand the constraint)"
+
+These are encoded as `placement_keepouts` in constraints.json — they block component placement but allow traces/vias through.
+
+**E. Free-form notes**
+> "Any other placement requirements I should know about? (e.g., 'C1 must be within 5mm of U1', 'the temperature sensor should be away from heat sources')"
+
+Note: proximity constraints are noted as `notes` on the component but not yet machine-enforced — flag this clearly.
 
 ---
 
@@ -117,6 +126,12 @@ Write `/tmp/constraints.json` in this format:
     "spacing_mm": 7.62,
     "notes": "Debug header, bottom edge"
   },
+  "placement_keepouts": [
+    {
+      "rect": [0, 60, 30, 80],
+      "notes": "ESP32 mating area — no components, traces OK"
+    }
+  ],
   "J3": {
     "constraint": "edge",
     "edge": "bottom",

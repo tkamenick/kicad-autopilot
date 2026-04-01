@@ -35,6 +35,9 @@ python -m src.placement_sweeper board.json --moves moves.json --top 10
 # Apply placement constraints
 python -m src.apply_constraints board.json constraints.json -o board.json
 
+# Initial component placement (from unplaced board)
+python -m src.component_placer board.json --constraints constraints.json -o board.json
+
 # Board spatial analysis (for agent routing decisions)
 python -m src.board_analyzer board.json --text
 python -m src.board_analyzer board.json --net "+3.3V"

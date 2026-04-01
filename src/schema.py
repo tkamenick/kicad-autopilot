@@ -125,6 +125,7 @@ class Keepout:
     radius: Optional[float] = None
     rect: Optional[tuple[float, float, float, float]] = None  # x, y, w, h
     polygon: Optional[list[tuple[float, float]]] = None
+    placement_only: bool = False  # True = blocks component placement but allows traces/vias
 
 
 @dataclass
@@ -314,6 +315,8 @@ def _keepout_to_dict(k: Keepout) -> dict:
         d["rect"] = list(k.rect)
     if k.polygon is not None:
         d["polygon"] = [list(pt) for pt in k.polygon]
+    if k.placement_only:
+        d["placement_only"] = True
     return d
 
 
@@ -326,6 +329,7 @@ def _keepout_from_dict(d: dict) -> Keepout:
         radius=d.get("radius"),
         rect=tuple(d["rect"]) if "rect" in d else None,
         polygon=[tuple(pt) for pt in d["polygon"]] if "polygon" in d else None,
+        placement_only=d.get("placement_only", False),
     )
 
 
@@ -415,3 +419,28 @@ def validate_board(board: Board) -> list[str]:
             errors.append(f"Via references unknown net {via.net!r}")
 
     return errors
+
+
+def is_board_unplaced(board: Board) -> bool:
+    """Detect if components are piled together (unplaced from schematic import).
+
+    Returns True if all components occupy less than 15% of the board area,
+    suggesting they haven't been placed yet.
+    """
+    positions = [comp.position for comp in board.components.values()]
+    if len(positions) < 2:
+        return False
+    xs = [p[0] for p in positions]
+    ys = [p[1] for p in positions]
+    spread = max(max(xs) - min(xs), max(ys) - min(ys))
+    if not board.board_outline:
+        return False
+    outline_xs = [p[0] for p in board.board_outline]
+    outline_ys = [p[1] for p in board.board_outline]
+    board_size = max(
+        max(outline_xs) - min(outline_xs),
+        max(outline_ys) - min(outline_ys),
+    )
+    if board_size <= 0:
+        return False
+    return spread < board_size * 0.15
