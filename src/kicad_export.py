@@ -191,8 +191,36 @@ def _extract_pad(pad_node: SExpr, net_map: dict[int, str]) -> Pad:
     )
 
 
-def _compute_bbox(pads: list[Pad]) -> tuple[float, float, float, float]:
-    """Compute bounding box from pad offsets, with a small margin."""
+def _compute_bbox(pads: list[Pad], fp_node: SExpr = None) -> tuple[float, float, float, float]:
+    """Compute bounding box from courtyard outline (preferred) or pad offsets.
+
+    The courtyard represents the actual physical footprint extent including
+    the component body, which can be much larger than the pad area (e.g.,
+    RJ45 connectors, through-hole headers).
+    """
+    # Try to extract courtyard lines from the footprint node
+    if fp_node is not None:
+        courtyard_pts: list[tuple[float, float]] = []
+        for item in fp_node:
+            if not isinstance(item, list):
+                continue
+            if item[0] not in ("fp_line", "fp_rect"):
+                continue
+            layer = get_str(item, "layer") or ""
+            if "Courtyard" not in layer and "CrtYd" not in layer:
+                continue
+            start = get_xy(item, "start")
+            end = get_xy(item, "end")
+            if start:
+                courtyard_pts.append(start)
+            if end:
+                courtyard_pts.append(end)
+        if courtyard_pts:
+            xs = [p[0] for p in courtyard_pts]
+            ys = [p[1] for p in courtyard_pts]
+            return (min(xs), min(ys), max(xs), max(ys))
+
+    # Fallback: compute from pads with margin
     if not pads:
         return (-2.0, -2.0, 2.0, 2.0)
     xs = [p.offset[0] - p.size[0] / 2 for p in pads] + [p.offset[0] + p.size[0] / 2 for p in pads]
@@ -229,7 +257,7 @@ def _extract_footprint(fp_node: SExpr, net_map: dict[int, str],
                 break
 
     pads = [_extract_pad(p, net_map) for p in find_all(fp_node, "pad")]
-    bbox = _compute_bbox(pads)
+    bbox = _compute_bbox(pads, fp_node)
 
     return Component(
         reference=reference,
