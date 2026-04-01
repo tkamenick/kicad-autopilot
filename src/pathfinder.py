@@ -677,6 +677,7 @@ def route_board(
     board: Board,
     via_cost: int = VIA_COST,
     only_nets: Optional[list[str]] = None,
+    skip_nets: Optional[set[str]] = None,
 ) -> tuple[Board, list[str]]:
     """Route all non-ground nets. Returns (updated_board, failed_net_names).
 
@@ -684,6 +685,7 @@ def route_board(
     Ground nets (class_='ground') are skipped — handled by B.Cu pour.
 
     If only_nets is given, routes only those net names (skip ground regardless).
+    If skip_nets is given, those nets are excluded (already routed by agent).
     """
     occupied = _build_occupied(board)
     pad_cells = _all_pad_cells(board)
@@ -716,6 +718,7 @@ def route_board(
         n for n in board.nets.values()
         if n.class_ != "ground"
         and (only_nets is None or n.name in only_nets)
+        and (skip_nets is None or n.name not in skip_nets)
     ]
     nets_to_route.sort(key=lambda n: (n.priority, net_max_dist.get(n.name, 0.0)))
 
@@ -838,6 +841,8 @@ def main() -> None:
                         help="Comma-separated list of nets to route")
     parser.add_argument("--via-cost", type=int, default=VIA_COST,
                         help=f"Grid-cell cost for a via (default {VIA_COST})")
+    parser.add_argument("--skip-nets", default=None,
+                        help="Comma-separated list of nets to skip (already routed by agent)")
     args = parser.parse_args()
 
     board = load_board(args.input)
@@ -848,7 +853,11 @@ def main() -> None:
     elif args.nets:
         only = [n.strip() for n in args.nets.split(",")]
 
-    routed, failed = route_board(board, via_cost=args.via_cost, only_nets=only)
+    skip: Optional[set[str]] = None
+    if args.skip_nets:
+        skip = {n.strip() for n in args.skip_nets.split(",")}
+
+    routed, failed = route_board(board, via_cost=args.via_cost, only_nets=only, skip_nets=skip)
 
     n_segs = sum(len(r.segments) for r in routed.routes)
     n_vias = len(routed.vias)
