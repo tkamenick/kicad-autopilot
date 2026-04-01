@@ -314,26 +314,36 @@ def _place_near_ic_pin(
     grid: float,
     offset_mm: float = 1.5,
 ) -> tuple[float, float]:
-    """Place a decoupling cap near the IC's power pin."""
-    # Find the IC's power pin position
+    """Place a decoupling cap near the IC's power pin.
+
+    Tries multiple offsets in all 4 directions, increasing distance,
+    to find a spot that doesn't overlap other caps already placed.
+    """
     for pad in ic.pads:
         if pad.net == power_net:
             pin_pos = ic.pad_abs_position(pad)
-            # Try placing offset from the pin in each direction
-            candidates = [
-                (pin_pos[0] + offset_mm, pin_pos[1]),
-                (pin_pos[0] - offset_mm, pin_pos[1]),
-                (pin_pos[0], pin_pos[1] + offset_mm),
-                (pin_pos[0], pin_pos[1] - offset_mm),
-            ]
             rbbox = _rotated_bbox(comp.bbox, comp.rotation)
-            for cx, cy in candidates:
-                pos = (snap_to_grid(cx, grid), snap_to_grid(cy, grid))
-                if (_is_inside_board(pos, rbbox, board)
-                        and not _component_overlaps_other(pos, rbbox, placed)
-                        and not _component_overlaps_keepout(pos, rbbox, keepouts)):
-                    return pos
-            # Fall back to gravity position
+
+            # Try increasing distances from the pin (1.5mm, 3mm, 4.5mm)
+            for dist in [offset_mm, offset_mm * 2, offset_mm * 3]:
+                # Try all 4 directions, plus 4 diagonal positions
+                candidates = [
+                    (pin_pos[0] - dist, pin_pos[1]),       # left (toward board edge)
+                    (pin_pos[0] + dist, pin_pos[1]),       # right
+                    (pin_pos[0], pin_pos[1] - dist),       # above
+                    (pin_pos[0], pin_pos[1] + dist),       # below
+                    (pin_pos[0] - dist, pin_pos[1] - dist),
+                    (pin_pos[0] - dist, pin_pos[1] + dist),
+                    (pin_pos[0] + dist, pin_pos[1] - dist),
+                    (pin_pos[0] + dist, pin_pos[1] + dist),
+                ]
+                for cx, cy in candidates:
+                    pos = (snap_to_grid(cx, grid), snap_to_grid(cy, grid))
+                    if (_is_inside_board(pos, rbbox, board)
+                            and not _component_overlaps_other(pos, rbbox, placed)
+                            and not _component_overlaps_keepout(pos, rbbox, keepouts)):
+                        return pos
+
             return _find_valid_position(comp, pin_pos, board, placed, keepouts, grid)
 
     return _find_valid_position(comp, ic.position, board, placed, keepouts, grid)
