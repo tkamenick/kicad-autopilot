@@ -49,6 +49,29 @@ _CONNECTOR_FOOTPRINT_PATTERNS = (
     "Molex", "TE_", "Amphenol",
 )
 
+def _rotated_bbox(
+    bbox: tuple[float, float, float, float], rotation: float,
+) -> tuple[float, float, float, float]:
+    """Rotate bbox corners by component rotation and return axis-aligned result.
+
+    The bbox in board.json is in LOCAL footprint space (pre-rotation).
+    This applies the KiCad clockwise rotation to get the actual extent
+    relative to the anchor in board space.
+    """
+    if rotation == 0.0:
+        return bbox
+    rad = math.radians(-rotation)  # KiCad CW convention
+    cos_r, sin_r = math.cos(rad), math.sin(rad)
+    corners = [
+        (bbox[0], bbox[1]), (bbox[2], bbox[1]),
+        (bbox[2], bbox[3]), (bbox[0], bbox[3]),
+    ]
+    rotated = [(x * cos_r - y * sin_r, x * sin_r + y * cos_r) for x, y in corners]
+    rxs = [c[0] for c in rotated]
+    rys = [c[1] for c in rotated]
+    return (min(rxs), min(rys), max(rxs), max(rys))
+
+
 _MOUNTING_FOOTPRINT_PATTERNS = (
     "MountingHole", "Mounting_Hole", "TestPoint",
 )
@@ -160,7 +183,7 @@ def _component_overlaps_other(
 
     for ref, other in placed.items():
         ox, oy = other.position
-        ob = other.bbox
+        ob = _rotated_bbox(other.bbox, other.rotation)
         ox0 = ox + ob[0]
         oy0 = oy + ob[1]
         ox1 = ox + ob[2]
@@ -246,6 +269,9 @@ def _find_valid_position(
     grid: float,
 ) -> tuple[float, float]:
     """Find a valid grid-snapped position near target that doesn't overlap anything."""
+    # Use rotated bbox for all checks
+    rbbox = _rotated_bbox(comp.bbox, comp.rotation)
+
     # Clamp target inside the board first (components often start off-board)
     if board.board_outline:
         oxs = [p[0] for p in board.board_outline]
@@ -257,9 +283,9 @@ def _find_valid_position(
     tx, ty = snap_to_grid(target[0], grid), snap_to_grid(target[1], grid)
 
     # Try target first
-    if (_is_inside_board((tx, ty), comp.bbox, board)
-            and not _component_overlaps_other((tx, ty), comp.bbox, placed)
-            and not _component_overlaps_keepout((tx, ty), comp.bbox, keepouts)):
+    if (_is_inside_board((tx, ty), rbbox, board)
+            and not _component_overlaps_other((tx, ty), rbbox, placed)
+            and not _component_overlaps_keepout((tx, ty), rbbox, keepouts)):
         return (tx, ty)
 
     # Spiral outward from target
@@ -269,9 +295,9 @@ def _find_valid_position(
             angle = (2 * math.pi * angle_steps) / (8 * radius_steps)
             cx = snap_to_grid(target[0] + r * math.cos(angle), grid)
             cy = snap_to_grid(target[1] + r * math.sin(angle), grid)
-            if (_is_inside_board((cx, cy), comp.bbox, board)
-                    and not _component_overlaps_other((cx, cy), comp.bbox, placed)
-                    and not _component_overlaps_keepout((cx, cy), comp.bbox, keepouts)):
+            if (_is_inside_board((cx, cy), rbbox, board)
+                    and not _component_overlaps_other((cx, cy), rbbox, placed)
+                    and not _component_overlaps_keepout((cx, cy), rbbox, keepouts)):
                 return (cx, cy)
 
     # Fallback: board center
@@ -300,11 +326,12 @@ def _place_near_ic_pin(
                 (pin_pos[0], pin_pos[1] + offset_mm),
                 (pin_pos[0], pin_pos[1] - offset_mm),
             ]
+            rbbox = _rotated_bbox(comp.bbox, comp.rotation)
             for cx, cy in candidates:
                 pos = (snap_to_grid(cx, grid), snap_to_grid(cy, grid))
-                if (_is_inside_board(pos, comp.bbox, board)
-                        and not _component_overlaps_other(pos, comp.bbox, placed)
-                        and not _component_overlaps_keepout(pos, comp.bbox, keepouts)):
+                if (_is_inside_board(pos, rbbox, board)
+                        and not _component_overlaps_other(pos, rbbox, placed)
+                        and not _component_overlaps_keepout(pos, rbbox, keepouts)):
                     return pos
             # Fall back to gravity position
             return _find_valid_position(comp, pin_pos, board, placed, keepouts, grid)
@@ -446,7 +473,7 @@ def place_components(
     for ref, comp in board.components.items():
         if ref in locked_refs:
             continue
-        if not _is_inside_board(comp.position, comp.bbox, board, margin_mm=0):
+        if not _is_inside_board(comp.position, _rotated_bbox(comp.bbox, comp.rotation), board, margin_mm=0):
             comp.position = (snap_to_grid(board_cx, grid), snap_to_grid(board_cy, grid))
 
     # --- Phase 3: Place mounting holes near corners ---
@@ -519,15 +546,16 @@ def _snap_to_edge(
     center_x = (bx0 + bx1) / 2
     center_y = (by0 + by1) / 2
 
-    # bbox is relative to anchor: (x_min, y_min, x_max, y_max)
-    bb = comp.bbox
+    # bbox is in LOCAL (pre-rotation) space — must rotate to get actual extent
+    bb = _rotated_bbox(comp.bbox, comp.rotation)
+
     # Offset from anchor to bbox center (for centering on the non-edge axis)
     bbox_center_offset_x = (bb[0] + bb[2]) / 2
     bbox_center_offset_y = (bb[1] + bb[3]) / 2
 
     if edge == "top":
         cy = by0 + offset_mm - bb[1]
-        cx = center_x - bbox_center_offset_x  # center the footprint, not the anchor
+        cx = center_x - bbox_center_offset_x
     elif edge == "bottom":
         cy = by1 - offset_mm - bb[3]
         cx = center_x - bbox_center_offset_x
