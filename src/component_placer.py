@@ -226,6 +226,14 @@ def _gravity_position(
 
     avg_x = sum(p[0] for p in connected_positions) / len(connected_positions)
     avg_y = sum(p[1] for p in connected_positions) / len(connected_positions)
+
+    # Clamp to inside the board (in case connected pads are off-board)
+    if board.board_outline:
+        oxs = [p[0] for p in board.board_outline]
+        oys = [p[1] for p in board.board_outline]
+        avg_x = max(min(oxs) + 2, min(max(oxs) - 2, avg_x))
+        avg_y = max(min(oys) + 2, min(max(oys) - 2, avg_y))
+
     return (avg_x, avg_y)
 
 
@@ -238,6 +246,14 @@ def _find_valid_position(
     grid: float,
 ) -> tuple[float, float]:
     """Find a valid grid-snapped position near target that doesn't overlap anything."""
+    # Clamp target inside the board first (components often start off-board)
+    if board.board_outline:
+        oxs = [p[0] for p in board.board_outline]
+        oys = [p[1] for p in board.board_outline]
+        target = (
+            max(min(oxs) + 2, min(max(oxs) - 2, target[0])),
+            max(min(oys) + 2, min(max(oys) - 2, target[1])),
+        )
     tx, ty = snap_to_grid(target[0], grid), snap_to_grid(target[1], grid)
 
     # Try target first
@@ -355,6 +371,56 @@ def place_components(
                     comp.rotation = rotation[0]
                 _snap_to_edge(comp, edge, offset, board, grid)
             comp.placement.constraint = c_type
+            # Store alignment info on the placement
+            if "align_group" in constraint:
+                comp.placement.align_group = constraint["align_group"]
+                comp.placement.align_axis = constraint.get("align_axis")
+                comp.placement.spacing_mm = constraint.get("spacing_mm")
+
+    # --- Phase 1b: Apply alignment groups ---
+    # Group constrained components by align_group and apply spacing
+    align_groups: dict[str, list[str]] = {}
+    for ref, constraint in constraints.items():
+        if ref == "placement_keepouts" or ref not in board.components:
+            continue
+        ag = constraint.get("align_group")
+        if ag:
+            align_groups.setdefault(ag, []).append(ref)
+
+    for group_name, refs in align_groups.items():
+        if len(refs) < 2:
+            continue
+        # Find the group's alignment axis and spacing
+        first_constraint = constraints[refs[0]]
+        axis = first_constraint.get("align_axis", "y")
+        spacing = first_constraint.get("spacing_mm")
+
+        # Get the shared coordinate from the first member
+        comps = [board.components[r] for r in refs]
+        if axis == "y":
+            # Same Y, spread in X with spacing
+            shared_y = comps[0].position[1]
+            if spacing:
+                center_x = sum(c.position[0] for c in comps) / len(comps)
+                total_width = spacing * (len(refs) - 1)
+                start_x = center_x - total_width / 2
+                for i, comp in enumerate(comps):
+                    comp.position = (
+                        snap_to_grid(start_x + i * spacing, grid),
+                        shared_y,
+                    )
+        elif axis == "x":
+            # Same X, spread in Y with spacing
+            shared_x = comps[0].position[0]
+            if spacing:
+                center_y = sum(c.position[1] for c in comps) / len(comps)
+                total_height = spacing * (len(refs) - 1)
+                start_y = center_y - total_height / 2
+                for i, comp in enumerate(comps):
+                    comp.position = (
+                        shared_x,
+                        snap_to_grid(start_y + i * spacing, grid),
+                    )
 
     # --- Phase 2: Classify remaining components ---
     remaining = {ref: comp for ref, comp in board.components.items()
@@ -369,6 +435,19 @@ def place_components(
     passives = {ref: comp for ref, comp in remaining.items()
                 if ref not in ics and ref not in decoupling and ref not in mounting
                 and _classify_component(comp) in ("passive", "other")}
+    # Catch-all: unconstrained connectors and anything else
+    rest = {ref: comp for ref, comp in remaining.items()
+            if ref not in ics and ref not in decoupling and ref not in mounting
+            and ref not in passives}
+
+    # --- Phase 2b: Move ALL unplaced components inside the board first ---
+    # Components from schematic import are often completely off-board.
+    board_cx, board_cy = _board_center(board)
+    for ref, comp in board.components.items():
+        if ref in locked_refs:
+            continue
+        if not _is_inside_board(comp.position, comp.bbox, board, margin_mm=0):
+            comp.position = (snap_to_grid(board_cx, grid), snap_to_grid(board_cy, grid))
 
     # --- Phase 3: Place mounting holes near corners ---
     corners = _board_corners(board, margin_mm=3.0)
@@ -407,6 +486,13 @@ def place_components(
         comp.position = pos
         placed[ref] = comp
 
+    # --- Phase 7: Place unconstrained connectors and anything else ---
+    for ref, comp in rest.items():
+        target = _gravity_position(comp, board, placed)
+        pos = _find_valid_position(comp, target, board, placed, keepouts, grid)
+        comp.position = pos
+        placed[ref] = comp
+
     return board
 
 
@@ -418,23 +504,26 @@ def _snap_to_edge(
     comp: Component, edge: str, offset_mm: float,
     board: Board, grid: float,
 ) -> None:
-    """Move component to the specified board edge."""
+    """Move component to the specified board edge, centered on the perpendicular axis."""
     outline_xs = [p[0] for p in board.board_outline]
     outline_ys = [p[1] for p in board.board_outline]
     bx0 = min(outline_xs)
     by0 = min(outline_ys)
     bx1 = max(outline_xs)
     by1 = max(outline_ys)
+    center_x = (bx0 + bx1) / 2
+    center_y = (by0 + by1) / 2
 
-    cx, cy = comp.position
     if edge == "top":
-        cy = by0 + offset_mm
+        cx, cy = center_x, by0 + offset_mm
     elif edge == "bottom":
-        cy = by1 - offset_mm
+        cx, cy = center_x, by1 - offset_mm
     elif edge == "left":
-        cx = bx0 + offset_mm
+        cx, cy = bx0 + offset_mm, center_y
     elif edge == "right":
-        cx = bx1 - offset_mm
+        cx, cy = bx1 - offset_mm, center_y
+    else:
+        return
 
     comp.position = (snap_to_grid(cx, grid), snap_to_grid(cy, grid))
 

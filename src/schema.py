@@ -422,25 +422,38 @@ def validate_board(board: Board) -> list[str]:
 
 
 def is_board_unplaced(board: Board) -> bool:
-    """Detect if components are piled together (unplaced from schematic import).
+    """Detect if components need initial placement.
 
-    Returns True if all components occupy less than 15% of the board area,
-    suggesting they haven't been placed yet.
+    Returns True if:
+    - Components are piled together (< 15% spread relative to board), OR
+    - Most components are outside the board outline
     """
     positions = [comp.position for comp in board.components.values()]
     if len(positions) < 2:
         return False
+    if not board.board_outline:
+        return False
+
+    outline_xs = [p[0] for p in board.board_outline]
+    outline_ys = [p[1] for p in board.board_outline]
+    bx0, bx1 = min(outline_xs), max(outline_xs)
+    by0, by1 = min(outline_ys), max(outline_ys)
+    board_w = bx1 - bx0
+    board_h = by1 - by0
+    if board_w <= 0 or board_h <= 0:
+        return False
+
+    # Check 1: components piled together (small spread)
     xs = [p[0] for p in positions]
     ys = [p[1] for p in positions]
     spread = max(max(xs) - min(xs), max(ys) - min(ys))
-    if not board.board_outline:
-        return False
-    outline_xs = [p[0] for p in board.board_outline]
-    outline_ys = [p[1] for p in board.board_outline]
-    board_size = max(
-        max(outline_xs) - min(outline_xs),
-        max(outline_ys) - min(outline_ys),
-    )
-    if board_size <= 0:
-        return False
-    return spread < board_size * 0.15
+    if spread < max(board_w, board_h) * 0.15:
+        return True
+
+    # Check 2: most components outside the board outline
+    outside = sum(1 for x, y in positions
+                  if x < bx0 or x > bx1 or y < by0 or y > by1)
+    if outside > len(positions) * 0.5:
+        return True
+
+    return False
