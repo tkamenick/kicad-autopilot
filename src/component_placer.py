@@ -504,7 +504,12 @@ def _snap_to_edge(
     comp: Component, edge: str, offset_mm: float,
     board: Board, grid: float,
 ) -> None:
-    """Move component to the specified board edge, centered on the perpendicular axis."""
+    """Move component to the specified board edge, centered on the perpendicular axis.
+
+    Accounts for the component's bbox so the entire footprint stays inside
+    the board. The offset is from the board edge to the nearest edge of the
+    component's footprint, not to its anchor point.
+    """
     outline_xs = [p[0] for p in board.board_outline]
     outline_ys = [p[1] for p in board.board_outline]
     bx0 = min(outline_xs)
@@ -514,14 +519,25 @@ def _snap_to_edge(
     center_x = (bx0 + bx1) / 2
     center_y = (by0 + by1) / 2
 
+    # bbox is relative to anchor: (x_min, y_min, x_max, y_max)
+    bb = comp.bbox
+
     if edge == "top":
-        cx, cy = center_x, by0 + offset_mm
+        # Place so the top of the footprint is at board_top + offset
+        # bbox y_min is the topmost extent relative to anchor
+        cy = by0 + offset_mm - bb[1]
+        cx = center_x
     elif edge == "bottom":
-        cx, cy = center_x, by1 - offset_mm
+        # Place so the bottom of the footprint is at board_bottom - offset
+        # bbox y_max is the bottommost extent relative to anchor
+        cy = by1 - offset_mm - bb[3]
+        cx = center_x
     elif edge == "left":
-        cx, cy = bx0 + offset_mm, center_y
+        cx = bx0 + offset_mm - bb[0]
+        cy = center_y
     elif edge == "right":
-        cx, cy = bx1 - offset_mm, center_y
+        cx = bx1 - offset_mm - bb[2]
+        cy = center_y
     else:
         return
 
