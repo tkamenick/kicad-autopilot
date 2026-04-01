@@ -521,23 +521,22 @@ def _snap_to_edge(
 
     # bbox is relative to anchor: (x_min, y_min, x_max, y_max)
     bb = comp.bbox
+    # Offset from anchor to bbox center (for centering on the non-edge axis)
+    bbox_center_offset_x = (bb[0] + bb[2]) / 2
+    bbox_center_offset_y = (bb[1] + bb[3]) / 2
 
     if edge == "top":
-        # Place so the top of the footprint is at board_top + offset
-        # bbox y_min is the topmost extent relative to anchor
         cy = by0 + offset_mm - bb[1]
-        cx = center_x
+        cx = center_x - bbox_center_offset_x  # center the footprint, not the anchor
     elif edge == "bottom":
-        # Place so the bottom of the footprint is at board_bottom - offset
-        # bbox y_max is the bottommost extent relative to anchor
         cy = by1 - offset_mm - bb[3]
-        cx = center_x
+        cx = center_x - bbox_center_offset_x
     elif edge == "left":
         cx = bx0 + offset_mm - bb[0]
-        cy = center_y
+        cy = center_y - bbox_center_offset_y
     elif edge == "right":
         cx = bx1 - offset_mm - bb[2]
-        cy = center_y
+        cy = center_y - bbox_center_offset_y
     else:
         return
 
