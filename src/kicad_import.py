@@ -3,9 +3,10 @@
 Strategy: text processing — no s-expression serializer needed.
 1. Parse original .kicad_pcb to extract net name→number map and board origin.
 2. Strip existing (segment ...) and (via ...) nodes.
-3. Load board.json → routes and vias.
-4. Convert board coordinates back to page coordinates.
-5. Inject new s-expression nodes before the file's closing ')'.
+3. Update component positions if changed in board.json (placement optimization).
+4. Load board.json → routes and vias.
+5. Convert board coordinates back to page coordinates.
+6. Inject new s-expression nodes before the file's closing ')'.
 
 CLI:
     python src/kicad_import.py board.json --base original.kicad_pcb -o routed.kicad_pcb
@@ -18,7 +19,9 @@ import uuid
 from pathlib import Path
 
 from src.schema import Board, Route, Via, load_board
-from src.sexpr_parser import find_all, find_one, get_at, get_str, get_xy, parse_file
+from src.sexpr_parser import (
+    find_all, find_one, get_at, get_str, get_xy, parse, parse_file,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +222,99 @@ def _snap_to_pad(
     return (x, y)
 
 
+def _update_component_positions(
+    text: str,
+    board: Board,
+    origin: tuple[float, float],
+) -> str:
+    """Update footprint (at ...) lines for components whose position changed.
+
+    Compares board.json positions against the .kicad_pcb file and rewrites
+    the (at X Y ROT) line for any component that moved during placement
+    optimization.
+    """
+    tree = parse(text)
+    origin_x, origin_y = origin
+
+    # Build ref → (page_x, page_y, rot) from KiCad file
+    kicad_positions: dict[str, tuple[float, float, float]] = {}
+    for fp in find_all(tree, "footprint"):
+        ref = "?"
+        for prop in find_all(fp, "property"):
+            if len(prop) >= 3 and prop[1] == "Reference":
+                val = str(prop[2])
+                if val and val not in ("REF**", "${REFERENCE}"):
+                    ref = val
+                break
+        if ref == "?":
+            continue
+        x, y, rot = get_at(fp)
+        kicad_positions[ref] = (x, y, rot)
+
+    # Find components that moved
+    moves: dict[str, tuple[float, float, float]] = {}
+    for ref, comp in board.components.items():
+        if ref not in kicad_positions:
+            continue
+        kx, ky, krot = kicad_positions[ref]
+        # Convert board coords to page coords
+        new_px = comp.position[0] + origin_x
+        new_py = comp.position[1] + origin_y
+        new_rot = comp.rotation
+        # Check if position changed. Use grid_step/2 tolerance to ignore
+        # rounding from grid-snap during export (e.g., 124.65 → 124.6).
+        # Only real placement moves (≥ 1 grid step) should trigger updates.
+        tol = board.grid_step / 2
+        if (abs(new_px - kx) > tol or abs(new_py - ky) > tol
+                or abs(new_rot - krot) > 0.01):
+            moves[ref] = (new_px, new_py, new_rot)
+
+    if not moves:
+        return text
+
+    # For each moved component, find its footprint in the text and
+    # replace the (at ...) line. Strategy: find the (property "Reference" "REF")
+    # text, scan backwards to find the containing (footprint, then find and
+    # replace the first (at ...) after it.
+    result = text
+    for ref, (px, py, rot) in moves.items():
+        # Find the reference property in the text
+        ref_pattern = re.compile(
+            r'\(property\s+"Reference"\s+"' + re.escape(ref) + r'"',
+        )
+        match = ref_pattern.search(result)
+        if not match:
+            continue
+
+        # Scan backwards from the reference to find the (footprint line
+        fp_start = result.rfind("(footprint", 0, match.start())
+        if fp_start == -1:
+            continue
+
+        # Find the (at ...) line within this footprint (first one after fp_start)
+        at_pattern = re.compile(r'\(at\s+[\d.\-]+\s+[\d.\-]+(?:\s+[\d.\-]+)?\)')
+        at_match = at_pattern.search(result, fp_start, match.start() + 200)
+        if not at_match:
+            continue
+
+        # Format new (at ...) with the updated position
+        px_s = _fmt_coord(px)
+        py_s = _fmt_coord(py)
+        if rot == 0.0:
+            new_at = f"(at {px_s} {py_s})"
+        else:
+            rot_s = _fmt_coord(rot)
+            new_at = f"(at {px_s} {py_s} {rot_s})"
+
+        result = result[:at_match.start()] + new_at + result[at_match.end():]
+
+    moved_refs = sorted(moves.keys())
+    if moved_refs:
+        print(f"Updated positions: {', '.join(moved_refs)}")
+
+    return result
+
+
 def import_routes(
     board: Board,
     kicad_base: str | Path,
@@ -231,16 +327,21 @@ def import_routes(
     # Read original file
     original_text = kicad_base.read_text(encoding="utf-8")
 
+    # Board origin in page coordinates (needed for position updates)
+    origin_x, origin_y = _extract_origin(kicad_base)
+
+    # Update component positions if changed during placement optimization
+    updated_text = _update_component_positions(
+        original_text, board, (origin_x, origin_y),
+    )
+
     # Strip existing routing
-    stripped = _strip_routing(original_text)
+    stripped = _strip_routing(updated_text)
 
     # Detect KiCad format: if top-level (net N "name") declarations exist,
     # use net numbers (KiCad 6-); otherwise use net names directly (KiCad 7+).
     net_num_map = _build_net_num_map(kicad_base)
     use_net_numbers = len(net_num_map) > 0
-
-    # Board origin in page coordinates
-    origin_x, origin_y = _extract_origin(kicad_base)
 
     # Build actual pad positions from KiCad file for endpoint snapping
     pad_map = _build_pad_position_map(kicad_base)
