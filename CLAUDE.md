@@ -35,7 +35,16 @@ python -m src.placement_sweeper board.json --moves moves.json --top 10
 # Apply placement constraints
 python -m src.apply_constraints board.json constraints.json -o board.json
 
-# Route nets
+# Board spatial analysis (for agent routing decisions)
+python -m src.board_analyzer board.json --text
+python -m src.board_analyzer board.json --net "+3.3V"
+python -m src.board_analyzer board.json --gaps
+
+# Draw routes with waypoints (agent-driven)
+python -m src.trace_tool board.json --plan '{"net":"+3.3V","waypoints":[[22.5,25.6],[22.5,45.0]],"layer":"F.Cu"}' -o board.json
+
+# Autoroute remaining nets (skip agent-routed nets)
+python -m src.pathfinder board.json --skip-nets "+3.3V,Net-(U1-AVDD)" -o board.json
 python -m src.pathfinder board.json --net "SPI_CLK"
 python -m src.pathfinder board.json --nets "3V3,SPI_CLK,SPI_MOSI"
 
@@ -65,7 +74,9 @@ All tools communicate via a single `board.json` intermediate format. The pipelin
 - `kicad_export.py` / `kicad_import.py` — Round-trip conversion between `.kicad_pcb` and `board.json`
 - `placement_scorer.py` — Computes placement quality metrics (wirelength, crossings, channel capacity, composite score 0-100)
 - `placement_sweeper.py` — Generates and scores placement variants given move specifications
-- `pathfinder.py` — A* grid router with multi-layer/via support and Steiner tree approximation for multi-terminal nets
+- `pathfinder.py` — A* grid router with multi-layer/via support, 45° diagonal moves, and Steiner tree approximation for multi-terminal nets
+- `trace_tool.py` — Waypoint-based trace drawing for agent-driven routing (no A*, no grid — just draws segments between waypoints)
+- `board_analyzer.py` — Spatial analysis: pad copper extents, passable gaps between components, routing corridors, per-net obstacle summaries
 - `drc_checker.py` — Design rule validation (clearance, shorts, unrouted nets, trace width, edge clearance)
 - `conflict_analyzer.py` — Pre-routing bottleneck and corridor competition analysis
 - `visualizer.py` — SVG renderer for board state visualization
@@ -75,7 +86,7 @@ All tools communicate via a single `board.json` intermediate format. The pipelin
 
 - **Coordinates:** All in millimeters, snapped to 0.3mm grid. Origin is board top-left corner (translated from KiCad's page-origin coordinate system during export).
 - **Grid snapping:** `round(round(value / grid) * grid, 4)` — all board.json coordinates must be grid-aligned.
-- **Routing:** Manhattan (90°) only. No 45° traces.
+- **Routing:** 90° and 45° traces. Agent-driven strategic routing for hard nets (trace_tool), A* autorouter for remaining nets (pathfinder).
 - **Via cost:** Default 5 grid cells equivalent (1.5mm wirelength penalty) to discourage unnecessary layer changes.
 - **Ground pour:** Modeled as B.Cu fill everywhere except under routes and keepouts. DRC must verify pour contiguity (no isolated islands).
 - **Dependencies:** Minimal — stdlib plus optionally numpy. No KiCad Python bindings required (s-expression parser is standalone).
